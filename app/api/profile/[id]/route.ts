@@ -4,9 +4,11 @@ import { supabase } from '@/lib/supabase'
 // GET - получить публичный профиль пользователя
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
+    const params = await context.params
+    
     // Получаем профиль пользователя
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
