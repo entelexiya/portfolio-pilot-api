@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+﻿import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 
 // GET - получить все достижения пользователя
@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { user_id, title, description, type, date, file_url } = body
+    const { user_id, title, description, category, type, date, file_url } = body
 
     // Валидация
     if (!user_id || !title || !type) {
@@ -50,10 +50,10 @@ export async function POST(req: NextRequest) {
         user_id,
         title,
         description,
+        category: category || 'activity',
         type,
-        date,
+        date: date || new Date().toISOString().split('T')[0],
         file_url,
-        verified: false
       })
       .select()
       .single()

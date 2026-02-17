@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+﻿import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 
 // GET - получить одно достижение
@@ -33,7 +33,7 @@ export async function PATCH(
   try {
     const params = await context.params
     const body = await req.json()
-    const { title, description, type, date, file_url, verified } = body
+    const { title, description, type, date, file_url } = body
 
     const { data, error } = await supabase
       .from('achievements')
@@ -43,7 +43,6 @@ export async function PATCH(
         ...(type && { type }),
         ...(date && { date }),
         ...(file_url !== undefined && { file_url }),
-        ...(verified !== undefined && { verified })
       })
       .eq('id', params.id)
       .select()
@@ -85,3 +84,4 @@ export async function DELETE(
     )
   }
 }
+

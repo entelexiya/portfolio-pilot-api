@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+﻿import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 
 // GET - получить публичный профиль пользователя
@@ -28,12 +28,16 @@ export async function GET(
     if (achievementsError) throw achievementsError
 
     // Статистика по типам достижений
+    const verifiedCount = achievements.filter(
+      (a: { verification_status?: string }) =>
+        a.verification_status === 'verified'
+    ).length
     const stats = {
       total: achievements.length,
-      olympiad: achievements.filter(a => a.type === 'olympiad').length,
-      project: achievements.filter(a => a.type === 'project').length,
-      volunteering: achievements.filter(a => a.type === 'volunteering').length,
-      verified: achievements.filter(a => a.verified).length
+      olympiad: achievements.filter((a: { type: string }) => a.type === 'olympiad').length,
+      project: achievements.filter((a: { type: string }) => a.type === 'project').length,
+      volunteering: achievements.filter((a: { type: string }) => a.type === 'volunteering').length,
+      verified: verifiedCount,
     }
 
     return NextResponse.json({
@@ -51,3 +55,4 @@ export async function GET(
     )
   }
 }
+
