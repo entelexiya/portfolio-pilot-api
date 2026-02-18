@@ -64,12 +64,15 @@ export async function POST(req: NextRequest) {
         .eq('id', achievementId)
     }
 
-    // Ссылка должна вести на ФРОНТ (страница /verify/[token]), не на API. Обязательно задайте NEXT_PUBLIC_APP_URL в бэкенде.
+    // Ссылка должна вести на ФРОНТ (страница /verify/[token]), не на API.
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin
     if (!process.env.NEXT_PUBLIC_APP_URL) {
-      console.warn('NEXT_PUBLIC_APP_URL not set: verification link will point to API and return 404. Set it to your frontend URL (e.g. https://portfolio-pilot.vercel.app).')
+      console.warn('NEXT_PUBLIC_APP_URL not set: verification link may point to API host. Set frontend URL in backend env.')
     }
     const verifyUrl = `${baseUrl.replace(/\/$/, '')}/verify/${requestToken}`
+
+    let emailSent = false
+    let emailError: string | null = null
 
     if (process.env.RESEND_API_KEY) {
       const res = await fetch('https://api.resend.com/emails', {
@@ -90,18 +93,28 @@ export async function POST(req: NextRequest) {
           `,
         }),
       })
+
       if (!res.ok) {
         const err = await res.text()
+        emailError = `Resend error: ${err}`
         console.error('Resend error:', err)
+      } else {
+        emailSent = true
       }
     } else {
+      emailError = 'RESEND_API_KEY is not configured on backend'
+      console.warn(emailError)
       console.log('[Dev] Verification email would go to:', verifierEmail, 'Link:', verifyUrl)
     }
 
-    return NextResponse.json({ success: true, verifyUrl })
+    return NextResponse.json({
+      success: true,
+      verifyUrl,
+      emailSent,
+      emailError,
+    })
   } catch (e) {
     console.error(e)
     return NextResponse.json({ error: 'Server error' }, { status: 500 })
   }
 }
-
