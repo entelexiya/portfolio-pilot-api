@@ -2,7 +2,8 @@ import { NextRequest } from 'next/server'
 import { createServiceClient } from '@/lib/supabase'
 import { getAuthenticatedUser } from '@/lib/auth'
 import { errorMessage, failure, getRequestId, success } from '@/lib/api-response'
-import { applyRateLimitHeaders, checkRateLimit, getClientIp } from '@/lib/rate-limit'
+import { applyRateLimitHeaders, checkRateLimitSmart, getClientIp } from '@/lib/rate-limit'
+import { logError, logWarn } from '@/lib/logger'
 
 const respondRateLimit = {
   limit: 30,
@@ -17,12 +18,17 @@ export async function POST(req: NextRequest) {
     const auth = await getAuthenticatedUser(req)
     if (!auth) return failure('Unauthorized', requestId, 401, 'UNAUTHORIZED')
 
-    const rate = checkRateLimit({
+    const rate = await checkRateLimitSmart({
       key: `verification:respond:${auth.user.id}:${ip}`,
       limit: respondRateLimit.limit,
       windowMs: respondRateLimit.windowMs,
     })
     if (!rate.allowed) {
+      logWarn({
+        event: 'verification_respond_rate_limited',
+        requestId,
+        meta: { userId: auth.user.id, ip },
+      })
       const res = failure('Too many requests', requestId, 429, 'RATE_LIMITED')
       return applyRateLimitHeaders(res, respondRateLimit.limit, rate.remaining, rate.resetAt)
     }
@@ -89,7 +95,12 @@ export async function POST(req: NextRequest) {
       .eq('id', verificationRequest.id)
 
     if (updateError) {
-      console.error('verification_requests update:', updateError)
+      logError({
+        event: 'verification_respond_update_failed',
+        requestId,
+        error: updateError,
+        meta: { requestToken },
+      })
       const res = failure('Failed to submit', requestId, 500, 'VERIFICATION_SUBMIT_FAILED')
       return applyRateLimitHeaders(res, respondRateLimit.limit, rate.remaining, rate.resetAt)
     }
@@ -97,6 +108,7 @@ export async function POST(req: NextRequest) {
     const res = success(null, requestId, 200, { status: newStatus })
     return applyRateLimitHeaders(res, respondRateLimit.limit, rate.remaining, rate.resetAt)
   } catch (error: unknown) {
+    logError({ event: 'verification_respond_failed', requestId, error })
     return failure(errorMessage(error), requestId, 500, 'VERIFICATION_RESPOND_FAILED')
   }
 }

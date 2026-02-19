@@ -3,7 +3,8 @@ import { randomUUID } from 'crypto'
 import { createServiceClient } from '@/lib/supabase'
 import { getAuthenticatedUser } from '@/lib/auth'
 import { errorMessage, failure, getRequestId, success } from '@/lib/api-response'
-import { applyRateLimitHeaders, checkRateLimit, getClientIp } from '@/lib/rate-limit'
+import { applyRateLimitHeaders, checkRateLimitSmart, getClientIp } from '@/lib/rate-limit'
+import { logError, logWarn } from '@/lib/logger'
 
 const requestRateLimit = {
   limit: 10,
@@ -18,13 +19,18 @@ export async function POST(req: NextRequest) {
     const auth = await getAuthenticatedUser(req)
     if (!auth) return failure('Unauthorized', requestId, 401, 'UNAUTHORIZED')
 
-    const rate = checkRateLimit({
+    const rate = await checkRateLimitSmart({
       key: `verification:request:${auth.user.id}:${ip}`,
       limit: requestRateLimit.limit,
       windowMs: requestRateLimit.windowMs,
     })
 
     if (!rate.allowed) {
+      logWarn({
+        event: 'verification_request_rate_limited',
+        requestId,
+        meta: { userId: auth.user.id, ip },
+      })
       const res = failure('Too many requests', requestId, 429, 'RATE_LIMITED')
       return applyRateLimitHeaders(res, requestRateLimit.limit, rate.remaining, rate.resetAt)
     }
@@ -68,7 +74,12 @@ export async function POST(req: NextRequest) {
     })
 
     if (insertError) {
-      console.error('verification_requests insert:', insertError)
+      logError({
+        event: 'verification_request_insert_failed',
+        requestId,
+        error: insertError,
+        meta: { achievementId },
+      })
       const res = failure(
         'Failed to create verification request',
         requestId,
@@ -119,14 +130,23 @@ export async function POST(req: NextRequest) {
       if (!resendRes.ok) {
         const resendErrorText = await resendRes.text()
         emailError = `Resend error: ${resendErrorText}`
-        console.error('Resend error:', resendErrorText)
+        logWarn({
+          event: 'verification_request_email_send_failed',
+          requestId,
+          message: resendErrorText,
+          meta: { verifierEmail: String(verifierEmail).trim() },
+        })
       } else {
         emailSent = true
       }
     } else {
       emailError = 'RESEND_API_KEY is not configured on backend'
-      console.warn(emailError)
-      console.log('[Dev] Verification email would go to:', verifierEmail, 'Link:', verifyUrl)
+      logWarn({
+        event: 'verification_request_email_not_configured',
+        requestId,
+        message: emailError,
+        meta: { verifierEmail: String(verifierEmail).trim(), verifyUrl },
+      })
     }
 
     const res = success(
@@ -141,6 +161,7 @@ export async function POST(req: NextRequest) {
     )
     return applyRateLimitHeaders(res, requestRateLimit.limit, rate.remaining, rate.resetAt)
   } catch (error: unknown) {
+    logError({ event: 'verification_request_failed', requestId, error })
     return failure(errorMessage(error), requestId, 500, 'VERIFICATION_REQUEST_FAILED')
   }
 }

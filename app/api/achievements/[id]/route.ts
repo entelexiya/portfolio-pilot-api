@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { getAuthenticatedUser } from '@/lib/auth'
 import { errorMessage, failure, getRequestId, success } from '@/lib/api-response'
+import { logError } from '@/lib/logger'
 
 const allowedCategories = new Set(['award', 'activity'])
 const allowedTypes = new Set([
@@ -40,6 +41,7 @@ export async function GET(
     if (error) throw error
     return success(data, requestId)
   } catch (error: unknown) {
+    logError({ event: 'achievement_get_failed', requestId, error })
     return failure(errorMessage(error), requestId, 404, 'ACHIEVEMENT_NOT_FOUND')
   }
 }
@@ -107,6 +109,7 @@ export async function PATCH(
     if (error) throw error
     return success(data, requestId)
   } catch (error: unknown) {
+    logError({ event: 'achievement_update_failed', requestId, error })
     return failure(errorMessage(error), requestId, 400, 'ACHIEVEMENT_UPDATE_FAILED')
   }
 }
@@ -130,6 +133,7 @@ export async function DELETE(
     if (error) throw error
     return success({ message: 'Achievement deleted successfully' }, requestId)
   } catch (error: unknown) {
+    logError({ event: 'achievement_delete_failed', requestId, error })
     return failure(errorMessage(error), requestId, 400, 'ACHIEVEMENT_DELETE_FAILED')
   }
 }

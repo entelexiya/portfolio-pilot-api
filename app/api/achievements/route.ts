@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { getAuthenticatedUser, isOwner } from '@/lib/auth'
 import { errorMessage, failure, getRequestId, success } from '@/lib/api-response'
+import { logError } from '@/lib/logger'
 
 const allowedCategories = new Set(['award', 'activity'])
 const allowedTypes = new Set([
@@ -41,6 +42,7 @@ export async function GET(req: NextRequest) {
     if (error) throw error
     return success(data, requestId)
   } catch (error: unknown) {
+    logError({ event: 'achievements_list_failed', requestId, error })
     return failure(errorMessage(error), requestId, 400, 'ACHIEVEMENTS_LIST_FAILED')
   }
 }
@@ -93,6 +95,7 @@ export async function POST(req: NextRequest) {
     if (error) throw error
     return success(data, requestId, 201)
   } catch (error: unknown) {
+    logError({ event: 'achievement_create_failed', requestId, error })
     return failure(errorMessage(error), requestId, 400, 'ACHIEVEMENT_CREATE_FAILED')
   }
 }

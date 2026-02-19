@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { errorMessage, failure, getRequestId, success } from '@/lib/api-response'
+import { logError } from '@/lib/logger'
 
 export async function GET(
   req: NextRequest,
@@ -47,6 +48,7 @@ export async function GET(
       requestId
     )
   } catch (error: unknown) {
+    logError({ event: 'profile_get_failed', requestId, error })
     return failure(errorMessage(error), requestId, 404, 'PROFILE_NOT_FOUND')
   }
 }
