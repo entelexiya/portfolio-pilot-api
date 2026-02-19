@@ -1,85 +1,102 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-import { supabase as supabaseServer } from '@/lib/supabase'
+import { NextRequest } from 'next/server'
+import { createServiceClient } from '@/lib/supabase'
+import { getAuthenticatedUser } from '@/lib/auth'
+import { errorMessage, failure, getRequestId, success } from '@/lib/api-response'
+import { applyRateLimitHeaders, checkRateLimit, getClientIp } from '@/lib/rate-limit'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const respondRateLimit = {
+  limit: 30,
+  windowMs: 10 * 60 * 1000,
+}
 
 export async function POST(req: NextRequest) {
-  try {
-    const authHeader = req.headers.get('authorization')
-    const token = authHeader?.replace('Bearer ', '')
-    if (!token) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+  const requestId = getRequestId(req)
+  const ip = getClientIp(req)
 
-    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
+  try {
+    const auth = await getAuthenticatedUser(req)
+    if (!auth) return failure('Unauthorized', requestId, 401, 'UNAUTHORIZED')
+
+    const rate = checkRateLimit({
+      key: `verification:respond:${auth.user.id}:${ip}`,
+      limit: respondRateLimit.limit,
+      windowMs: respondRateLimit.windowMs,
     })
-    const { data: { user }, error: userError } = await supabaseAuth.auth.getUser()
-    if (userError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!rate.allowed) {
+      const res = failure('Too many requests', requestId, 429, 'RATE_LIMITED')
+      return applyRateLimitHeaders(res, respondRateLimit.limit, rate.remaining, rate.resetAt)
     }
 
     const body = await req.json()
-    const { token: requestToken, action, comment } = body
-    if (!requestToken || !action || !['approve', 'reject'].includes(action)) {
-      return NextResponse.json(
-        { error: 'token and action (approve|reject) required' },
-        { status: 400 }
+    const { token: requestToken, action, comment } = body ?? {}
+    if (
+      typeof requestToken !== 'string' ||
+      !requestToken ||
+      !['approve', 'reject'].includes(action)
+    ) {
+      const res = failure(
+        'token and action (approve|reject) required',
+        requestId,
+        400,
+        'VALIDATION_ERROR'
       )
+      return applyRateLimitHeaders(res, respondRateLimit.limit, rate.remaining, rate.resetAt)
     }
 
-    const { data: verificationRequest, error: fetchError } = await supabaseServer
+    const supabase = createServiceClient()
+    const { data: verificationRequest, error: fetchError } = await supabase
       .from('verification_requests')
       .select('id, verifier_email, verifier_id, status')
       .eq('token', requestToken)
       .single()
 
     if (fetchError || !verificationRequest) {
-      return NextResponse.json({ error: 'Link not found' }, { status: 404 })
+      const res = failure('Link not found', requestId, 404, 'NOT_FOUND')
+      return applyRateLimitHeaders(res, respondRateLimit.limit, rate.remaining, rate.resetAt)
     }
     if (verificationRequest.status !== 'pending') {
-      return NextResponse.json({ error: 'Link already used' }, { status: 410 })
+      const res = failure('Link already used', requestId, 410, 'LINK_USED')
+      return applyRateLimitHeaders(res, respondRateLimit.limit, rate.remaining, rate.resetAt)
     }
 
     const verifierEmail = verificationRequest.verifier_email.toLowerCase()
-    const userEmail = (user.email || '').toLowerCase()
+    const userEmail = (auth.user.email || '').toLowerCase()
     if (userEmail !== verifierEmail) {
-      return NextResponse.json(
-        {
-          error:
-            'This link was sent to a different email. Sign in with the email that received the verification request.',
-        },
-        { status: 403 }
+      const res = failure(
+        'This link was sent to a different email. Sign in with the email that received the verification request.',
+        requestId,
+        403,
+        'FORBIDDEN'
       )
+      return applyRateLimitHeaders(res, respondRateLimit.limit, rate.remaining, rate.resetAt)
     }
 
     if (!verificationRequest.verifier_id) {
-      await supabaseServer
+      await supabase
         .from('verification_requests')
-        .update({ verifier_id: user.id })
+        .update({ verifier_id: auth.user.id })
         .eq('id', verificationRequest.id)
-      await supabaseServer.from('profiles').update({ role: 'verifier' }).eq('id', user.id)
+      await supabase.from('profiles').update({ role: 'verifier' }).eq('id', auth.user.id)
     }
 
     const newStatus = action === 'approve' ? 'approved' : 'rejected'
-    const { error: updateError } = await supabaseServer
+    const { error: updateError } = await supabase
       .from('verification_requests')
       .update({
         status: newStatus,
-        verifier_comment: comment || null,
+        verifier_comment: typeof comment === 'string' ? comment : null,
       })
       .eq('id', verificationRequest.id)
 
     if (updateError) {
       console.error('verification_requests update:', updateError)
-      return NextResponse.json({ error: 'Failed to submit' }, { status: 500 })
+      const res = failure('Failed to submit', requestId, 500, 'VERIFICATION_SUBMIT_FAILED')
+      return applyRateLimitHeaders(res, respondRateLimit.limit, rate.remaining, rate.resetAt)
     }
 
-    return NextResponse.json({ success: true, status: newStatus })
-  } catch (e) {
-    console.error(e)
-    return NextResponse.json({ error: 'Server error' }, { status: 500 })
+    const res = success(null, requestId, 200, { status: newStatus })
+    return applyRateLimitHeaders(res, respondRateLimit.limit, rate.remaining, rate.resetAt)
+  } catch (error: unknown) {
+    return failure(errorMessage(error), requestId, 500, 'VERIFICATION_RESPOND_FAILED')
   }
 }

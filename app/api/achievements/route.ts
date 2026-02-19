@@ -1,7 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { createUserClient } from '@/lib/supabase'
-
-type AuthUser = { id: string }
+import { NextRequest } from 'next/server'
+import { getAuthenticatedUser, isOwner } from '@/lib/auth'
+import { errorMessage, failure, getRequestId, success } from '@/lib/api-response'
 
 const allowedCategories = new Set(['award', 'activity'])
 const allowedTypes = new Set([
@@ -17,68 +16,40 @@ const allowedTypes = new Set([
   'activity_other',
 ])
 
-function getBearerToken(req: NextRequest) {
-  const authHeader = req.headers.get('authorization') || ''
-  return authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null
-}
-
-async function requireAuth(req: NextRequest): Promise<AuthUser | NextResponse> {
-  const token = getBearerToken(req)
-  if (!token) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const supabase = createUserClient(token)
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser()
-
-  if (error || !user) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 })
-  }
-
-  return { id: user.id }
-}
-
 function isValidDate(value: string) {
   return !Number.isNaN(Date.parse(value))
 }
 
-function getErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Unknown error'
-}
-
 export async function GET(req: NextRequest) {
+  const requestId = getRequestId(req)
   try {
-    const auth = await requireAuth(req)
-    if (auth instanceof NextResponse) return auth
+    const auth = await getAuthenticatedUser(req)
+    if (!auth) return failure('Unauthorized', requestId, 401, 'UNAUTHORIZED')
 
     const { searchParams } = new URL(req.url)
     const userId = searchParams.get('userId')
-
-    if (userId && userId !== auth.id) {
-      return NextResponse.json({ success: false, error: 'Forbidden' }, { status: 403 })
+    if (!isOwner(userId, auth.user.id)) {
+      return failure('Forbidden', requestId, 403, 'FORBIDDEN')
     }
 
-    const supabase = createUserClient(getBearerToken(req)!)
-    const { data, error } = await supabase
+    const { data, error } = await auth.supabase
       .from('achievements')
       .select('*')
-      .eq('user_id', auth.id)
+      .eq('user_id', auth.user.id)
       .order('date', { ascending: false })
 
     if (error) throw error
-    return NextResponse.json({ success: true, data })
+    return success(data, requestId)
   } catch (error: unknown) {
-    return NextResponse.json({ success: false, error: getErrorMessage(error) }, { status: 400 })
+    return failure(errorMessage(error), requestId, 400, 'ACHIEVEMENTS_LIST_FAILED')
   }
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getRequestId(req)
   try {
-    const auth = await requireAuth(req)
-    if (auth instanceof NextResponse) return auth
+    const auth = await getAuthenticatedUser(req)
+    if (!auth) return failure('Unauthorized', requestId, 401, 'UNAUTHORIZED')
 
     const body = await req.json()
     const {
@@ -92,23 +63,22 @@ export async function POST(req: NextRequest) {
     } = body ?? {}
 
     if (typeof title !== 'string' || !title.trim()) {
-      return NextResponse.json({ success: false, error: 'title is required' }, { status: 400 })
+      return failure('title is required', requestId, 400, 'VALIDATION_ERROR')
     }
     if (typeof type !== 'string' || !allowedTypes.has(type)) {
-      return NextResponse.json({ success: false, error: 'Invalid type' }, { status: 400 })
+      return failure('Invalid type', requestId, 400, 'VALIDATION_ERROR')
     }
     if (typeof category !== 'string' || !allowedCategories.has(category)) {
-      return NextResponse.json({ success: false, error: 'Invalid category' }, { status: 400 })
+      return failure('Invalid category', requestId, 400, 'VALIDATION_ERROR')
     }
     if (typeof date !== 'string' || !isValidDate(date)) {
-      return NextResponse.json({ success: false, error: 'Invalid date' }, { status: 400 })
+      return failure('Invalid date', requestId, 400, 'VALIDATION_ERROR')
     }
 
-    const supabase = createUserClient(getBearerToken(req)!)
-    const { data, error } = await supabase
+    const { data, error } = await auth.supabase
       .from('achievements')
       .insert({
-        user_id: auth.id,
+        user_id: auth.user.id,
         title: title.trim(),
         description: typeof description === 'string' ? description : null,
         category,
@@ -121,8 +91,8 @@ export async function POST(req: NextRequest) {
       .single()
 
     if (error) throw error
-    return NextResponse.json({ success: true, data }, { status: 201 })
+    return success(data, requestId, 201)
   } catch (error: unknown) {
-    return NextResponse.json({ success: false, error: getErrorMessage(error) }, { status: 400 })
+    return failure(errorMessage(error), requestId, 400, 'ACHIEVEMENT_CREATE_FAILED')
   }
 }

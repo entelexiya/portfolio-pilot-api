@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { createUserClient } from '@/lib/supabase'
+import { NextRequest } from 'next/server'
+import { getAuthenticatedUser } from '@/lib/auth'
+import { errorMessage, failure, getRequestId, success } from '@/lib/api-response'
 
 const allowedCategories = new Set(['award', 'activity'])
 const allowedTypes = new Set([
@@ -15,55 +16,31 @@ const allowedTypes = new Set([
   'activity_other',
 ])
 
-function getBearerToken(req: NextRequest) {
-  const authHeader = req.headers.get('authorization') || ''
-  return authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null
-}
-
-async function getUserClient(req: NextRequest) {
-  const token = getBearerToken(req)
-  if (!token) return null
-
-  const supabase = createUserClient(token)
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser()
-
-  if (error || !user) return null
-  return { supabase, userId: user.id }
-}
-
 function isValidDate(value: string) {
   return !Number.isNaN(Date.parse(value))
-}
-
-function getErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Unknown error'
 }
 
 export async function GET(
   req: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
+  const requestId = getRequestId(req)
   try {
-    const auth = await getUserClient(req)
-    if (!auth) {
-      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 })
-    }
+    const auth = await getAuthenticatedUser(req)
+    if (!auth) return failure('Unauthorized', requestId, 401, 'UNAUTHORIZED')
 
     const params = await context.params
     const { data, error } = await auth.supabase
       .from('achievements')
       .select('*')
       .eq('id', params.id)
-      .eq('user_id', auth.userId)
+      .eq('user_id', auth.user.id)
       .single()
 
     if (error) throw error
-    return NextResponse.json({ success: true, data })
+    return success(data, requestId)
   } catch (error: unknown) {
-    return NextResponse.json({ success: false, error: getErrorMessage(error) }, { status: 404 })
+    return failure(errorMessage(error), requestId, 404, 'ACHIEVEMENT_NOT_FOUND')
   }
 }
 
@@ -71,11 +48,10 @@ export async function PATCH(
   req: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
+  const requestId = getRequestId(req)
   try {
-    const auth = await getUserClient(req)
-    if (!auth) {
-      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 })
-    }
+    const auth = await getAuthenticatedUser(req)
+    if (!auth) return failure('Unauthorized', requestId, 401, 'UNAUTHORIZED')
 
     const params = await context.params
     const body = await req.json()
@@ -83,7 +59,7 @@ export async function PATCH(
 
     if (body.title !== undefined) {
       if (typeof body.title !== 'string' || !body.title.trim()) {
-        return NextResponse.json({ success: false, error: 'Invalid title' }, { status: 400 })
+        return failure('Invalid title', requestId, 400, 'VALIDATION_ERROR')
       }
       payload.title = body.title.trim()
     }
@@ -92,19 +68,19 @@ export async function PATCH(
     }
     if (body.category !== undefined) {
       if (typeof body.category !== 'string' || !allowedCategories.has(body.category)) {
-        return NextResponse.json({ success: false, error: 'Invalid category' }, { status: 400 })
+        return failure('Invalid category', requestId, 400, 'VALIDATION_ERROR')
       }
       payload.category = body.category
     }
     if (body.type !== undefined) {
       if (typeof body.type !== 'string' || !allowedTypes.has(body.type)) {
-        return NextResponse.json({ success: false, error: 'Invalid type' }, { status: 400 })
+        return failure('Invalid type', requestId, 400, 'VALIDATION_ERROR')
       }
       payload.type = body.type
     }
     if (body.date !== undefined) {
       if (typeof body.date !== 'string' || !isValidDate(body.date)) {
-        return NextResponse.json({ success: false, error: 'Invalid date' }, { status: 400 })
+        return failure('Invalid date', requestId, 400, 'VALIDATION_ERROR')
       }
       payload.date = body.date
     }
@@ -117,21 +93,21 @@ export async function PATCH(
     }
 
     if (Object.keys(payload).length === 0) {
-      return NextResponse.json({ success: false, error: 'No valid fields to update' }, { status: 400 })
+      return failure('No valid fields to update', requestId, 400, 'VALIDATION_ERROR')
     }
 
     const { data, error } = await auth.supabase
       .from('achievements')
       .update(payload)
       .eq('id', params.id)
-      .eq('user_id', auth.userId)
+      .eq('user_id', auth.user.id)
       .select()
       .single()
 
     if (error) throw error
-    return NextResponse.json({ success: true, data })
+    return success(data, requestId)
   } catch (error: unknown) {
-    return NextResponse.json({ success: false, error: getErrorMessage(error) }, { status: 400 })
+    return failure(errorMessage(error), requestId, 400, 'ACHIEVEMENT_UPDATE_FAILED')
   }
 }
 
@@ -139,26 +115,21 @@ export async function DELETE(
   req: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
+  const requestId = getRequestId(req)
   try {
-    const auth = await getUserClient(req)
-    if (!auth) {
-      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 })
-    }
+    const auth = await getAuthenticatedUser(req)
+    if (!auth) return failure('Unauthorized', requestId, 401, 'UNAUTHORIZED')
 
     const params = await context.params
     const { error } = await auth.supabase
       .from('achievements')
       .delete()
       .eq('id', params.id)
-      .eq('user_id', auth.userId)
+      .eq('user_id', auth.user.id)
 
     if (error) throw error
-
-    return NextResponse.json({
-      success: true,
-      message: 'Achievement deleted successfully',
-    })
+    return success({ message: 'Achievement deleted successfully' }, requestId)
   } catch (error: unknown) {
-    return NextResponse.json({ success: false, error: getErrorMessage(error) }, { status: 400 })
+    return failure(errorMessage(error), requestId, 400, 'ACHIEVEMENT_DELETE_FAILED')
   }
 }

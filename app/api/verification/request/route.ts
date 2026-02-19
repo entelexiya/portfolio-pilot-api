@@ -1,73 +1,95 @@
-﻿import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { NextRequest } from 'next/server'
 import { randomUUID } from 'crypto'
+import { createServiceClient } from '@/lib/supabase'
+import { getAuthenticatedUser } from '@/lib/auth'
+import { errorMessage, failure, getRequestId, success } from '@/lib/api-response'
+import { applyRateLimitHeaders, checkRateLimit, getClientIp } from '@/lib/rate-limit'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const requestRateLimit = {
+  limit: 10,
+  windowMs: 10 * 60 * 1000,
+}
 
 export async function POST(req: NextRequest) {
-  try {
-    const authHeader = req.headers.get('authorization')
-    const token = authHeader?.replace('Bearer ', '')
-    if (!token) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+  const requestId = getRequestId(req)
+  const ip = getClientIp(req)
 
-    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
+  try {
+    const auth = await getAuthenticatedUser(req)
+    if (!auth) return failure('Unauthorized', requestId, 401, 'UNAUTHORIZED')
+
+    const rate = checkRateLimit({
+      key: `verification:request:${auth.user.id}:${ip}`,
+      limit: requestRateLimit.limit,
+      windowMs: requestRateLimit.windowMs,
     })
-    const { data: { user }, error: userError } = await supabaseAuth.auth.getUser()
-    if (userError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    if (!rate.allowed) {
+      const res = failure('Too many requests', requestId, 429, 'RATE_LIMITED')
+      return applyRateLimitHeaders(res, requestRateLimit.limit, rate.remaining, rate.resetAt)
     }
 
     const body = await req.json()
-    const { achievementId, verifierEmail, verificationLink, message } = body
-    if (!achievementId || !verifierEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(verifierEmail)) {
-      return NextResponse.json(
-        { error: 'achievementId and valid verifierEmail are required' },
-        { status: 400 }
+    const { achievementId, verifierEmail, verificationLink, message } = body ?? {}
+    if (
+      !achievementId ||
+      !verifierEmail ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(verifierEmail))
+    ) {
+      const res = failure(
+        'achievementId and valid verifierEmail are required',
+        requestId,
+        400,
+        'VALIDATION_ERROR'
       )
+      return applyRateLimitHeaders(res, requestRateLimit.limit, rate.remaining, rate.resetAt)
     }
 
-    const supabase = createClient(supabaseUrl, supabaseAnonKey)
-
+    const supabase = createServiceClient()
     const { data: achievement, error: achError } = await supabase
       .from('achievements')
       .select('id, user_id')
       .eq('id', achievementId)
       .single()
 
-    if (achError || !achievement || achievement.user_id !== user.id) {
-      return NextResponse.json({ error: 'Achievement not found or not yours' }, { status: 404 })
+    if (achError || !achievement || achievement.user_id !== auth.user.id) {
+      const res = failure('Achievement not found or not yours', requestId, 404, 'NOT_FOUND')
+      return applyRateLimitHeaders(res, requestRateLimit.limit, rate.remaining, rate.resetAt)
     }
 
     const requestToken = randomUUID()
     const { error: insertError } = await supabase.from('verification_requests').insert({
       achievement_id: achievementId,
-      student_id: user.id,
-      verifier_email: verifierEmail.trim().toLowerCase(),
-      message: message || null,
+      student_id: auth.user.id,
+      verifier_email: String(verifierEmail).trim().toLowerCase(),
+      message: typeof message === 'string' ? message : null,
       status: 'pending',
       token: requestToken,
     })
 
     if (insertError) {
       console.error('verification_requests insert:', insertError)
-      return NextResponse.json({ error: 'Failed to create verification request' }, { status: 500 })
+      const res = failure(
+        'Failed to create verification request',
+        requestId,
+        500,
+        'VERIFICATION_REQUEST_CREATE_FAILED'
+      )
+      return applyRateLimitHeaders(res, requestRateLimit.limit, rate.remaining, rate.resetAt)
     }
 
-    if (verificationLink) {
+    if (typeof verificationLink === 'string' && verificationLink.trim()) {
       await supabase
         .from('achievements')
-        .update({ verification_link: verificationLink })
+        .update({ verification_link: verificationLink.trim() })
         .eq('id', achievementId)
     }
 
-    // Ссылка должна вести на ФРОНТ (страница /verify/[token]), не на API.
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin
     if (!process.env.NEXT_PUBLIC_APP_URL) {
-      console.warn('NEXT_PUBLIC_APP_URL not set: verification link may point to API host. Set frontend URL in backend env.')
+      console.warn(
+        'NEXT_PUBLIC_APP_URL not set: verification link may point to API host. Set frontend URL in backend env.'
+      )
     }
     const verifyUrl = `${baseUrl.replace(/\/$/, '')}/verify/${requestToken}`
 
@@ -75,7 +97,7 @@ export async function POST(req: NextRequest) {
     let emailError: string | null = null
 
     if (process.env.RESEND_API_KEY) {
-      const res = await fetch('https://api.resend.com/emails', {
+      const resendRes = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -83,7 +105,7 @@ export async function POST(req: NextRequest) {
         },
         body: JSON.stringify({
           from: process.env.RESEND_FROM_EMAIL || 'PortfolioPilot <onboarding@resend.dev>',
-          to: [verifierEmail.trim()],
+          to: [String(verifierEmail).trim()],
           subject: 'Verify a student achievement on PortfolioPilot',
           html: `
             <p>A student asked you to confirm their achievement on PortfolioPilot.</p>
@@ -94,10 +116,10 @@ export async function POST(req: NextRequest) {
         }),
       })
 
-      if (!res.ok) {
-        const err = await res.text()
-        emailError = `Resend error: ${err}`
-        console.error('Resend error:', err)
+      if (!resendRes.ok) {
+        const resendErrorText = await resendRes.text()
+        emailError = `Resend error: ${resendErrorText}`
+        console.error('Resend error:', resendErrorText)
       } else {
         emailSent = true
       }
@@ -107,14 +129,18 @@ export async function POST(req: NextRequest) {
       console.log('[Dev] Verification email would go to:', verifierEmail, 'Link:', verifyUrl)
     }
 
-    return NextResponse.json({
-      success: true,
-      verifyUrl,
-      emailSent,
-      emailError,
-    })
-  } catch (e) {
-    console.error(e)
-    return NextResponse.json({ error: 'Server error' }, { status: 500 })
+    const res = success(
+      null,
+      requestId,
+      200,
+      {
+        verifyUrl,
+        emailSent,
+        emailError,
+      }
+    )
+    return applyRateLimitHeaders(res, requestRateLimit.limit, rate.remaining, rate.resetAt)
+  } catch (error: unknown) {
+    return failure(errorMessage(error), requestId, 500, 'VERIFICATION_REQUEST_FAILED')
   }
 }
